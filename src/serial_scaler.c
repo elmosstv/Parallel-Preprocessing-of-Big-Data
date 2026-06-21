@@ -12,6 +12,7 @@ void die(const char *msg) {
     exit(EXIT_FAILURE);
 }
 
+//στατιστικά per column (mean, min, max, std, var) διαβάζοντας το αρχείο block-block
 static void compute_stats(FILE *fin, double *mean, double *min, double *max, double *std, double *var, long N, int D, long block_rows)
 {
   for(int j=0; j<D; j++){
@@ -22,15 +23,16 @@ static void compute_stats(FILE *fin, double *mean, double *min, double *max, dou
     var[j] = 0.0;
   }
 
+  // buffer για ένα block γραμμών (block_rows x D doubles)
   double *block = malloc((size_t)block_rows * D * sizeof(double));
   if (!block) die("Memory allocation failed");
-  double *sum_sq = calloc(D , sizeof(double));
+  double *sum_sq = calloc(D , sizeof(double));// αθροισμα τετραγωνων ανα στηλη, για τον υπολογισμο var
   if (!sum_sq) die("Memory allocation failed");
 
   long rows_left = N;
   while(rows_left > 0)
   {
-    long rows_read = rows_left < block_rows ? rows_left : block_rows;
+    long rows_read = rows_left < block_rows ? rows_left : block_rows;// τελευταιο block μπορει να ειναι μικροτερο
     size_t n = fread(block, sizeof(double), (size_t)rows_read * D, fin);
     if (n != (size_t)rows_read * D) die("Unexpected EOF in phase 1");
     for(int i = 0; i<rows_read; i++){
@@ -46,6 +48,7 @@ static void compute_stats(FILE *fin, double *mean, double *min, double *max, dou
   }
   free(block);
 
+  // τελικος υπολογισμος mean/var/std απο τα aggregates
   for(int j=0; j<D; j++){
     mean[j] /= N;
     var[j] = sum_sq[j]/N - mean[j] * mean[j];
@@ -55,6 +58,7 @@ static void compute_stats(FILE *fin, double *mean, double *min, double *max, dou
   free(sum_sq);
 }
 
+//standard: z = (x - mean) / std, γραφεται κατευθειαν στο fout
 static void apply_StandardScaler(FILE *fin, FILE *fout, double *mean, double *std, long N, int D, long block_rows)
 {
   double *block = malloc((size_t)block_rows * D * sizeof(double));
@@ -69,6 +73,7 @@ static void apply_StandardScaler(FILE *fin, FILE *fout, double *mean, double *st
     for(int i = 0; i<rows_read; i++){
       for(int j=0; j<D; j++){
         double val = block[i * D + j];
+        // αν std=0 (σταθερη στηλη) βαζουμε 0 για να μη διαιρεσουμε με 0
         block[i * D + j] =(std[j] > 0) ?((val - mean[j]) / std[j]) : 0.0;
       }
     }
@@ -79,6 +84,7 @@ static void apply_StandardScaler(FILE *fin, FILE *fout, double *mean, double *st
   free(block);
 }
 
+//minmax: x' = (x - min) / (max - min) -> [0,1]
 static void apply_MinMaxScaler(FILE *fin, FILE *fout, double *min, double *max, long N, int D, long block_rows)
 {
   double *block = malloc((size_t)block_rows * D * sizeof(double));
@@ -107,6 +113,7 @@ static void apply_MinMaxScaler(FILE *fin, FILE *fout, double *min, double *max, 
 
 int main(int argc, char *argv[])
 {
+  // input_file output_file N D mode [block_rows]
     if(argc < 6 || argc > 7){
       fprintf(stderr, "Usage: %s <input_file> <output_file> <num_samples> <num_features> <mode> [block_rows]\n", argv[0]);
       return EXIT_FAILURE;

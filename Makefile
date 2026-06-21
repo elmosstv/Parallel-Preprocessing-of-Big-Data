@@ -1,7 +1,6 @@
 # Compilers
 CC = gcc
 MPICC = mpicc
-MPICXX = mpicxx
 NVCC = nvcc
 
 # Common Flags

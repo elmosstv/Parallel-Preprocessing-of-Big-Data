@@ -26,6 +26,7 @@ void die(const char *msg) {
     exit(EXIT_FAILURE);
 }
 
+// 32-byte aligned malloc, χρησιμη για SIMD loads
 static void *alloc_aligned(size_t n_elements, size_t elem_size)
 {
     size_t size = n_elements * elem_size;
@@ -34,6 +35,7 @@ static void *alloc_aligned(size_t n_elements, size_t elem_size)
     return ptr;
 }
 
+//στατιστικά per column (mean, min, max, std, var) διαβάζοντας το αρχείο block-block
 static void compute_stats(FILE *fin, double *mean, double *min, double *max, double *std,  double *var, long N, int D, long block_rows)
 {
     for (int j = 0; j < D; j++) {
@@ -51,12 +53,11 @@ static void compute_stats(FILE *fin, double *mean, double *min, double *max, dou
 
     long rows_left = N;
     while (rows_left > 0) {
-        long rows_read = rows_left < block_rows ? rows_left : block_rows;
+        long rows_read = rows_left < block_rows ? rows_left : block_rows;// τελευταιο block μπορει να ειναι μικροτερο
         size_t n = fread(block, sizeof(double), (size_t)rows_read * D, fin);
         if (n != (size_t)rows_read * D) die("Unexpected EOF in phase 1");
-        // PITHANI ALLAGI TOY LOOP GIA EPITAXINSI PREPI NA DOKIMASTI STO CLUSTER
         for (long i = 0; i < rows_read; i++) {
-            double *row = block + (size_t)i * D;
+            double *row = block + (size_t)i * D;// pointer στην αρχη της γραμμης, αποφευγει τον επαναλαμβανομενο πολλαπλασιασμο i*D
             for (int j = 0; j < D; j++) {
                 double val = row[j];
                 mean[j]   += val;
@@ -78,6 +79,7 @@ static void compute_stats(FILE *fin, double *mean, double *min, double *max, dou
     aligned_free(sum_sq);
 }
 
+//standard: z = (x - mean) / std, χρησιμοποιει 1/std προυπολογισμενο ωστε να γινεται πολλαπλασιασμος αντι για διαιρεση στο εσωτερικο loop
 static void apply_StandardScaler(FILE *fin, FILE *fout,
                                   double *mean, double *std,
                                   long N, int D, long block_rows)
@@ -107,6 +109,7 @@ static void apply_StandardScaler(FILE *fin, FILE *fout,
     aligned_free(block);
 }
 
+//minmax : x' = (x - min)/(max - min), γραμμενο σαν x*inv_range - scaled_min για να αποφευγεται διαιρεση ανα στοιχειο
 static void apply_MinMaxScaler(FILE *fin, FILE *fout, double *min, double *max,long N, int D, long block_rows)
 {
     double *block = alloc_aligned((size_t)block_rows * D, sizeof(double));
@@ -119,7 +122,7 @@ static void apply_MinMaxScaler(FILE *fin, FILE *fout, double *min, double *max,l
             scaled_min[j] = min[j] / range;
         } else {
             inv_range[j]  = 0.0;
-            scaled_min[j] = 0.0;
+            scaled_min[j] = 0.0;// ωστε row*inv_range - scaled_min == (row-min)/range
         }
     }
 
@@ -147,6 +150,7 @@ static void apply_MinMaxScaler(FILE *fin, FILE *fout, double *min, double *max,l
 
 int main(int argc, char *argv[])
 {
+    // input_file output_file N D mode [block_rows]
     if (argc < 6 || argc > 7) {
         fprintf(stderr,
             "Usage: %s <input_file> <output_file> <N> <D> <mode> [block_rows]\n",
@@ -191,7 +195,7 @@ int main(int argc, char *argv[])
                  (ts_end.tv_nsec - ts_start.tv_nsec) / 1e9;
     printf("Statistics computed in %.3f seconds\n", time_spent);
 
-    rewind(fin);
+    rewind(fin);// ξαναδιαβαζουμε το ιδιο αρχειο απο την αρχη για το phase 2
 
     printf("\n[Phase 2] Applying %s scaling...\n", mode);
     clock_gettime(CLOCK_MONOTONIC, &ts_start);

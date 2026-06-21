@@ -4,15 +4,16 @@
 #include <math.h>
 #include <mpi.h>
 
+/* Η συνάρτηση die δέχεται πλέον το rank και καλεί την MPI_Abort 
+για να τερματίσει όλες τις διεργασίες σε περίπτωση σφάλματος.*/
 void die(const char *msg, int rank) {
     if (rank == 0) {
         fprintf(stderr, "Error: %s\n", msg);
-        fflush(stderr);
     }
     MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
 }
 
-/* Data Partitioning */
+/* Data Partitioning: υπολογίζει τις γραμμές (chunk) που αναλαμβάνει κάθε διεργασία.*/
 void get_local_range(long N, int rank, int size, long *local_start, long *local_N) {
     long rows_per_proc = N / size;
     long remainder = N % size;
@@ -26,8 +27,10 @@ void get_local_range(long N, int rank, int size, long *local_start, long *local_
     }
 }
 
-static void compute_stats_mpi(MPI_File fin, double *global_mean, double *global_min, double *global_max, double *global_std, double *global_var, long local_N, long N_total, int D, long block_rows, MPI_Offset start_offset, int rank)
+/* Χρήση POSIX FILE* αντί για MPI_File */
+static void compute_stats_mpi(FILE *fin, double *global_mean, double *global_min, double *global_max, double *global_std, double *global_var, long local_N, long N_total, int D, long block_rows, MPI_Offset start_offset, int rank)
 {
+    /* Δέσμευση μνήμης για τα ΤΟΠΙΚΑ στατιστικά της κάθε διεργασίας */
     double *loc_sum = calloc(D, sizeof(double));
     double *loc_sum_sq = calloc(D, sizeof(double));
     double *loc_min = malloc(D * sizeof(double));
@@ -51,33 +54,36 @@ static void compute_stats_mpi(MPI_File fin, double *global_mean, double *global_
         long rows_read = rows_left < block_rows ? rows_left : block_rows;
         int count = (int)(rows_read * D);
 
-        // ΑΝΕΞΑΡΤΗΤΟ MPI I/O (Χωρίς το _all)
-        MPI_File_read_at(fin, current_offset, block, count, MPI_DOUBLE, MPI_STATUS_IGNORE);
+        // Ανάγνωση με fseek/fread στο κατάλληλο offset
+        fseek(fin, (long)current_offset, SEEK_SET);
+        fread(block, sizeof(double), count, fin);
         
-        for(long i = 0; i < rows_read; i++){
+        for(int i = 0; i < rows_read; i++){
             for(int j = 0; j < D; j++){
                 double val = block[i * D + j];
-                loc_sum[j] += val; 
+                loc_sum[j] += val; // Υπολογισμός τοπικών αθροισμάτων
                 loc_sum_sq[j] += val * val; 
                 if (val < loc_min[j]) loc_min[j] = val;
                 if (val > loc_max[j]) loc_max[j] = val;
             }
         }
         rows_left -= rows_read;
-        current_offset += count * sizeof(double);
+        current_offset += count * sizeof(double); // Ενημέρωση του offset
     }
     free(block);
 
+    // Δέσμευση μνήμης για τα καθολικά (global) αθροίσματα
     double *global_sum = malloc(D * sizeof(double));
     double *global_sum_sq = malloc(D * sizeof(double));
     if (!global_sum || !global_sum_sq) die("Memory allocation failed (global stats)", rank);
 
-    // Συλλογικές πράξεις για συγκέντρωση των στατιστικών
+    // Συλλογικές επικοινωνίες MPI_Allreduce για να συγκεντρωθούν τα τοπικά στατιστικά σε ολικά
     MPI_Allreduce(loc_sum, global_sum, D, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(loc_sum_sq, global_sum_sq, D, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(loc_min, global_min, D, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
     MPI_Allreduce(loc_max, global_max, D, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 
+    // Υπολογισμός τελικών στατιστικών χρησιμοποιώντας το N_total
     for(int j=0; j<D; j++){
         global_mean[j] = global_sum[j] / N_total;
         global_var[j] = global_sum_sq[j] / N_total - global_mean[j] * global_mean[j];
@@ -85,11 +91,15 @@ static void compute_stats_mpi(MPI_File fin, double *global_mean, double *global_
         global_std[j] = sqrt(global_var[j]);
     }
 
-    free(loc_sum); free(loc_sum_sq); free(loc_min); free(loc_max);
-    free(global_sum); free(global_sum_sq);
+    free(loc_sum);
+    free(loc_sum_sq);
+    free(loc_min);
+    free(loc_max);
+    free(global_sum);
+    free(global_sum_sq);
 }
 
-static void apply_StandardScaler_mpi(MPI_File fin, MPI_File fout, double *mean, double *std, long local_N, int D, long block_rows, MPI_Offset start_offset, int rank)
+static void apply_StandardScaler_mpi(FILE *fin, FILE *fout, double *mean, double *std, long local_N, int D, long block_rows, MPI_Offset start_offset, int rank)
 {
     double *block = malloc((size_t)block_rows * D * sizeof(double));
     if (!block) die("Memory allocation failed (block phase 2)", rank);
@@ -101,18 +111,20 @@ static void apply_StandardScaler_mpi(MPI_File fin, MPI_File fout, double *mean, 
         long rows_read = rows_left < block_rows ? rows_left : block_rows;
         int count = (int)(rows_read * D);
 
-        // ΑΝΕΞΑΡΤΗΤΟ MPI I/O Ανάγνωσης
-        MPI_File_read_at(fin, current_offset, block, count, MPI_DOUBLE, MPI_STATUS_IGNORE);
+        // Ανάγνωση αρχικού block από το offset της διεργασίας
+        fseek(fin, (long)current_offset, SEEK_SET);
+        fread(block, sizeof(double), count, fin);
 
-        for(long i = 0; i < rows_read; i++){
+        for(int i = 0; i < rows_read; i++){
             for(int j = 0; j < D; j++){
                 double val = block[i * D + j];
                 block[i * D + j] = (std[j] > 0) ? ((val - mean[j]) / std[j]) : 0.0;
             }
         }
         
-        // ΑΝΕΞΑΡΤΗΤΟ MPI I/O Εγγραφής
-        MPI_File_write_at(fout, current_offset, block, count, MPI_DOUBLE, MPI_STATUS_IGNORE);
+        // Εγγραφή block στο αρχείο εξόδου, στο ίδιο ακριβώς offset
+        fseek(fout, (long)current_offset, SEEK_SET);
+        fwrite(block, sizeof(double), count, fout);
         
         rows_left -= rows_read;
         current_offset += count * sizeof(double);
@@ -120,7 +132,7 @@ static void apply_StandardScaler_mpi(MPI_File fin, MPI_File fout, double *mean, 
     free(block);
 }
 
-static void apply_MinMaxScaler_mpi(MPI_File fin, MPI_File fout, double *min, double *max, long local_N, int D, long block_rows, MPI_Offset start_offset, int rank)
+static void apply_MinMaxScaler_mpi(FILE *fin, FILE *fout, double *min, double *max, long local_N, int D, long block_rows, MPI_Offset start_offset, int rank)
 {
     double *block = malloc((size_t)block_rows * D * sizeof(double));
     if (!block) die("Memory allocation failed (block phase 2)", rank);
@@ -132,16 +144,20 @@ static void apply_MinMaxScaler_mpi(MPI_File fin, MPI_File fout, double *min, dou
         long rows_read = rows_left < block_rows ? rows_left : block_rows;
         int count = (int)(rows_read * D);
 
-        MPI_File_read_at(fin, current_offset, block, count, MPI_DOUBLE, MPI_STATUS_IGNORE);
+        // Ανάγνωση αρχικού block από το offset της διεργασίας
+        fseek(fin, (long)current_offset, SEEK_SET);
+        fread(block, sizeof(double), count, fin);
 
-        for(long i = 0; i < rows_read; i++){
+        for(int i = 0; i < rows_read; i++){
             for(int j = 0; j < D; j++){
                 double val = block[i * D + j];
                 block[i * D + j] = (max[j] != min[j]) ? ((val - min[j]) / (max[j] - min[j])) : 0.0;
             }
         }
         
-        MPI_File_write_at(fout, current_offset, block, count, MPI_DOUBLE, MPI_STATUS_IGNORE);
+        // Εγγραφή block στο αρχείο εξόδου, στο ίδιο ακριβώς offset
+        fseek(fout, (long)current_offset, SEEK_SET);
+        fwrite(block, sizeof(double), count, fout);
         
         rows_left -= rows_read;
         current_offset += count * sizeof(double);
@@ -151,6 +167,7 @@ static void apply_MinMaxScaler_mpi(MPI_File fin, MPI_File fout, double *min, dou
 
 int main(int argc, char *argv[])
 {
+    // Αρχικοποίηση του περιβάλλοντος MPI
     MPI_Init(&argc, &argv);
 
     int rank, size;
@@ -160,7 +177,6 @@ int main(int argc, char *argv[])
     if(argc < 6 || argc > 7){
         if (rank == 0) {
             fprintf(stderr, "Usage: mpirun -np <procs> %s <input> <output> <N> <D> <mode> [block_rows]\n", argv[0]);
-            fflush(stderr);
         }
         MPI_Finalize();
         return EXIT_FAILURE;
@@ -177,32 +193,24 @@ int main(int argc, char *argv[])
     if (strcmp(mode, "standard") != 0 && strcmp(mode, "minmax") != 0) die("mode must be 'standard' or 'minmax'", rank);
  
     if (rank == 0) {
-        printf("--- MPI Scaler (MPI I/O) ---\n");
+        printf("--- MPI Scaler ---\n");
         printf("MPI Size: %d processes\n", size);
         printf("Input   : %s\n", input_file);
         printf("Output  : %s\n", output_file);
         printf("N=%ld  D=%d  mode=%s  block_rows=%ld\n", N, D, mode, block_rows);
         printf("Block size: %.2f MB\n\n", (double)block_rows * D * sizeof(double) / (1024.0 * 1024.0));
-        fflush(stdout); 
     }
 
+    /* Κατανομή του φόρτου εργασίας (data partitioning) */
     long local_start, local_N;
     get_local_range(N, rank, size, &local_start, &local_N);
 
-    // Προσοχή: Χρήση MPI_Offset για μεγάλα αρχεία (>2GB)
+    // Το starting offset (σε bytes) 
     MPI_Offset start_offset = (MPI_Offset)local_start * D * sizeof(double);
 
-    // Άνοιγμα αρχείου Εισόδου με MPI I/O
-    MPI_File fin;
-    if (MPI_File_open(MPI_COMM_WORLD, input_file, MPI_MODE_RDONLY, MPI_INFO_NULL, &fin) != MPI_SUCCESS) {
-        die("Failed to open input file via MPI", rank);
-    }
-
-    // Άνοιγμα (ή δημιουργία) αρχείου Εξόδου με MPI I/O
-    MPI_File fout;
-    if (MPI_File_open(MPI_COMM_WORLD, output_file, MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL, &fout) != MPI_SUCCESS) {
-        die("Failed to create/open output file via MPI", rank);
-    }
+    // Άνοιγμα του αρχείου εισόδου με κλασικό C File I/O
+    FILE *fin = fopen(input_file, "rb");
+    if (!fin) die("Failed to open input file", rank);
 
     double *global_mean = malloc(D * sizeof(double));
     double *global_min = malloc(D * sizeof(double));
@@ -214,11 +222,8 @@ int main(int argc, char *argv[])
 
     double start_time, end_time;
 
-    /* --- Phase 1 --- */
-    if (rank == 0) {
-        printf("Computing statistics...\n");
-        fflush(stdout); 
-    }
+    /* Φάση 1: Υπολογισμός Στατιστικών */
+    if (rank == 0) printf("Computing statistics...\n");
     MPI_Barrier(MPI_COMM_WORLD);
     start_time = MPI_Wtime();
     
@@ -226,16 +231,25 @@ int main(int argc, char *argv[])
     
     MPI_Barrier(MPI_COMM_WORLD);
     end_time = MPI_Wtime();
+    if (rank == 0) printf("Statistics computed in %f seconds\n", end_time - start_time);
+    
+    /* Φάση 2: Εφαρμογή Scaler */
+    
+    // Η διεργασία 0 δημιουργεί το αρχείο εξόδου, για να βεβαιωθούμε ότι υπάρχει άδειο
     if (rank == 0) {
-        printf("Statistics computed in %f seconds\n", end_time - start_time);
-        fflush(stdout);
+        FILE *f = fopen(output_file, "wb");
+        if (!f) die("Failed to create output file", rank);
+        fclose(f);
     }
     
-    /* --- Phase 2 --- */
-    if (rank == 0) {
-        printf("\n[Phase 2] Applying %s scaling...\n", mode);
-        fflush(stdout);
-    }
+    // Περιμένουμε όλοι να ολοκληρωθεί η δημιουργία
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    // Όλες οι διεργασίες ανοίγουν το αρχείο εξόδου για παράλληλη ενημέρωση (r+b)
+    FILE *fout = fopen(output_file, "r+b");
+    if (!fout) die("Failed to open output file for update", rank);
+
+    if (rank == 0) printf("\n[Phase 2] Applying %s scaling...\n", mode);
     MPI_Barrier(MPI_COMM_WORLD);
     start_time = MPI_Wtime();
     
@@ -248,14 +262,11 @@ int main(int argc, char *argv[])
 
     MPI_Barrier(MPI_COMM_WORLD);
     end_time = MPI_Wtime();
-    if (rank == 0) {
-        printf("Scaling applied in %f seconds\n\n", end_time - start_time);  
-        fflush(stdout);
-    }
+    if (rank == 0) printf("Scaling applied in %f seconds\n", end_time - start_time);  
 
-    // Κλείσιμο των αρχείων MPI
-    MPI_File_close(&fin);
-    MPI_File_close(&fout);
+    // Κλείσιμο των αρχείων
+    fclose(fin);
+    fclose(fout);
 
     free(global_mean);
     free(global_min);

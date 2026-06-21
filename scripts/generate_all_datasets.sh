@@ -22,11 +22,11 @@ python3 scripts/generate_data.py --samples 10000000 --features 128 --output data
 echo "Το Large Dataset ολοκληρώθηκε."
 echo "---------------------------------------------------"
 
-# # 4. Very Large (~51.2 GB)
-# echo "[4/4] Δημιουργία Very Large Dataset (N=50,000,000 | D=128)"
-# echo "Αυτό θα πάρει αρκετή ώρα..."
-# python3 scripts/generate_data.py --samples 50000000 --features 128 --output data_50M_128.bin --dtype float64
-# echo "Το Very Large Dataset ολοκληρώθηκε."
-# echo "---------------------------------------------------"
+# 4. Very Large (~51.2 GB)
+echo "[4/4] Δημιουργία Very Large Dataset (N=50,000,000 | D=128)"
+echo "Αυτό θα πάρει αρκετή ώρα..."
+python3 scripts/generate_data.py --samples 50000000 --features 128 --output data_50M_128.bin --dtype float64
+echo "Το Very Large Dataset ολοκληρώθηκε."
+echo "---------------------------------------------------"
 
 echo "Όλα τα αρχεία δημιουργήθηκαν με επιτυχία!"

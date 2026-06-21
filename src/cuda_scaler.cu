@@ -21,13 +21,9 @@ void die(const char *msg) {
     exit(EXIT_FAILURE);
 }
 
-// ---------------------------------------------------------
-// GPU KERNELS
-// ---------------------------------------------------------
 
-// Phase 1 Kernel: Calculate partial stats for the current block
+// Kernel: Calculate partial stats for the current block
 // Grid: 1D blocks of threads. Thread 'j' handles column 'j'.
-// Because threads in a warp access consecutive columns for a row, this perfectly achieves memory coalescing!
 __global__ void block_stats_kernel(const double* __restrict__ block, 
                                    double* d_sum, double* d_sum_sq, 
                                    double* d_min, double* d_max, 
@@ -55,7 +51,7 @@ __global__ void block_stats_kernel(const double* __restrict__ block,
     }
 }
 
-// Phase 2 Kernel: StandardScaler (Embarrassingly Parallel)
+// Kernel: StandardScaler (Embarrassingly Parallel)
 // 1 Thread = 1 Matrix Element
 __global__ void standard_scale_kernel(double* block, 
                                       const double* __restrict__ mean, 
@@ -69,7 +65,7 @@ __global__ void standard_scale_kernel(double* block,
     }
 }
 
-// Phase 2 Kernel: MinMaxScaler (Embarrassingly Parallel)
+// Kernel: MinMaxScaler (Embarrassingly Parallel)
 // 1 Thread = 1 Matrix Element
 __global__ void minmax_scale_kernel(double* block, 
                                     const double* __restrict__ scaled_min, 
@@ -117,7 +113,7 @@ int main(int argc, char *argv[])
     size_t block_bytes = (size_t)block_rows * D * sizeof(double);
     size_t d_bytes = D * sizeof(double);
 
-    // 1. PINNED HOST MEMORY ALLOCATION (Crucial for PCIe transfer speeds!)
+    // 1. PINNED HOST MEMORY ALLOCATION 
     double *h_block;
     CHECK_CUDA(cudaMallocHost((void**)&h_block, block_bytes));
     
@@ -145,9 +141,7 @@ int main(int argc, char *argv[])
     double *h_block_min = (double*)malloc(d_bytes);
     double *h_block_max = (double*)malloc(d_bytes);
 
-    // ==========================================
-    // PHASE 1: COMPUTE STATISTICS
-    // ==========================================
+    //  COMPUTE STATISTICS
     printf("\n[Phase 1] Computing statistics via GPU...\n");
     clock_gettime(CLOCK_MONOTONIC, &ts_start);
 
@@ -196,9 +190,8 @@ int main(int argc, char *argv[])
     clock_gettime(CLOCK_MONOTONIC, &ts_end);
     printf("Statistics computed in %.3f seconds\n", (ts_end.tv_sec - ts_start.tv_sec) + (ts_end.tv_nsec - ts_start.tv_nsec) / 1e9);
 
-    // ==========================================
-    // PHASE 2: APPLY SCALING
-    // ==========================================
+    
+    // APPLY SCALING
     rewind(fin);
     printf("\n[Phase 2] Applying %s scaling via GPU...\n", mode);
     clock_gettime(CLOCK_MONOTONIC, &ts_start);
@@ -246,7 +239,7 @@ int main(int argc, char *argv[])
         // H2D Transfer
         CHECK_CUDA(cudaMemcpy(d_block, h_block, current_block_bytes, cudaMemcpyHostToDevice));
 
-        // Launch proper Kernel
+        // Launch  Kernel
         if (strcmp(mode, "standard") == 0) {
             standard_scale_kernel<<<num_blocks, threads_per_block>>>(d_block, d_const2, d_const1, total_elements, D);
         } else {

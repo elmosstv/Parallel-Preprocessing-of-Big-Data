@@ -9,6 +9,7 @@ void die(const char *msg) {
     exit(EXIT_FAILURE);
 }
 
+//per-column στατιστικα, παραλληλο reduction μεσα σε καθε block
 static void compute_stats(FILE *fin, double *mean, double *min, double *max, double *std, double *var, long N, int D, long block_rows)
 {
   for(int j=0; j<D; j++){
@@ -27,11 +28,11 @@ static void compute_stats(FILE *fin, double *mean, double *min, double *max, dou
   long rows_left = N;
   while(rows_left > 0)
   {
-    long rows_read = rows_left < block_rows ? rows_left : block_rows;
+    long rows_read = rows_left < block_rows ? rows_left : block_rows;// τελευταιο block μπορει να ειναι μικροτερο
     size_t n = fread(block, sizeof(double), (size_t)rows_read * D, fin);
     if (n != (size_t)rows_read * D) die("Unexpected EOF in phase 1");
     
-    // OpenMP Παραλληλισμός με Array Reductions για αποφυγή Race Conditions
+    // OpenMP Παραλληλισμός με Array Reductions για αποφυγή Race Conditions,καθε thread κρατα δικα του partial mean/sum_sq/min/max, το OpenMP τα συγχωνευει στο τελος
     #pragma omp parallel for default(none) shared(block, D, rows_read) \
         reduction(+:mean[0:D], sum_sq[0:D]) \
         reduction(min:min[0:D]) reduction(max:max[0:D])
@@ -56,6 +57,7 @@ static void compute_stats(FILE *fin, double *mean, double *min, double *max, dou
   free(sum_sq);
 }
 
+//standard: z = (x - mean) / std
 static void apply_StandardScaler(FILE *fin, FILE *fout, double *mean, double *std, long N, int D, long block_rows)
 {
   double *block = malloc((size_t)block_rows * D * sizeof(double));
@@ -82,6 +84,7 @@ static void apply_StandardScaler(FILE *fin, FILE *fout, double *mean, double *st
   free(block);
 }
 
+//minmax: x' = (x - min) / (max - min)
 static void apply_MinMaxScaler(FILE *fin, FILE *fout, double *min, double *max, long N, int D, long block_rows)
 {
   double *block = malloc((size_t)block_rows * D * sizeof(double));
@@ -110,6 +113,7 @@ static void apply_MinMaxScaler(FILE *fin, FILE *fout, double *min, double *max, 
 
 int main(int argc, char *argv[])
 {
+  // input_file output_file N D mode [block_rows]
     if(argc < 6 || argc > 7){
       fprintf(stderr, "Usage: %s <input_file> <output_file> <num_samples> <num_features> <mode> [block_rows]\n", argv[0]);
       return EXIT_FAILURE;
