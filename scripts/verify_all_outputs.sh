@@ -18,7 +18,7 @@ IMPLEMENTATIONS=("serial" "simd" "omp" "mpi" "cuda")
 
 for impl in "${IMPLEMENTATIONS[@]}"; do
     # Φτιάχνουμε το όνομα του αρχείου εξόδου με βάση το N και το D (όπως στο προηγούμενο script)
-    OUTPUT_FILE="out_${impl}_${N}_${D}.bin"
+    OUTPUT_FILE="out_${impl}.bin"
 
     # Ελέγχουμε αν το αρχείο υπάρχει
     if [ -f "$OUTPUT_FILE" ]; then
